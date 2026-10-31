@@ -1638,7 +1638,7 @@ export async function startSession(
 
   if (!socket) {
     try {
-      await execAdbShell(s, `pkill -f scrcpy-server`)
+      await execAdbShell(s, `pkill -f com.genymobile.scrcpy.Server`)
     } catch {
       // Ignore if process doesn't exist
     }
@@ -1874,7 +1874,7 @@ export async function startSession(
     audioSocket?.destroy()
     stopAudioHub(s)
     try {
-      await execAdbShell(s, `pkill -f scrcpy-server`)
+      await execAdbShell(s, `pkill -f com.genymobile.scrcpy.Server`)
     } catch {
       // Ignore if process doesn't exist
     }
@@ -1919,7 +1919,7 @@ export async function stopSession(serial: string): Promise<void> {
   session.viewerProcess = null
 
   try {
-    await execAdbShell(s, `pkill -f scrcpy-server`)
+    await execAdbShell(s, `pkill -f com.genymobile.scrcpy.Server`)
   } catch {
     // Ignore if process doesn't exist
   }
