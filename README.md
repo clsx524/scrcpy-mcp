@@ -241,7 +241,7 @@ turn audio on.
 | `screenshot` | Capture the screen and return it as an image. ~33ms with scrcpy, ~500ms via ADB. |
 | `screenshot_to_file` | Capture the screen and save the PNG on the host, returning the path and byte size instead of image data. Use when the client cannot render image blocks. |
 | `screen_record_start` | Start recording the screen to a host-side MP4. Taps the scrcpy session's H.264 stream (no device `screenrecord`), auto-starts a session if needed, and starts at a keyframe. Optional `duration` auto-stops. |
-| `screen_record_stop` | Stop recording, remux the raw H.264 to MP4 with ffmpeg, and return the host path (raw `.h264` kept if remux fails). |
+| `screen_record_stop` | Stop recording, remux the raw H.264 to MP4 with ffmpeg, and return the host path (raw `.h264` kept if remux fails). Also collects a recording that `duration` auto-stopped, waiting for its remux to finish. |
 
 ### Input Control
 
@@ -359,7 +359,7 @@ The server host has no sound card — typical for a container (no `/dev/snd`, no
 No `DISPLAY`/`WAYLAND_DISPLAY` on the server host, so no ffplay window can open. The MJPEG server still runs: open the returned URL from a machine that can reach `MJPEG_PUBLIC_HOST`, and publish the port if the server runs in a container.
 
 **`screen_record_start` fails or `screen_record_stop` says no recording in progress**
-Recording taps the scrcpy session's H.264 stream on the host, so it needs an active scrcpy session (the tool starts one) and ffmpeg for the MP4 remux. If remux fails, the raw `.h264` path is returned and remains playable.
+Recording taps the scrcpy session's H.264 stream on the host, so it needs an active scrcpy session (the tool starts one) and ffmpeg for the MP4 remux. If remux fails, the raw `.h264` path is returned and remains playable. `screen_record_stop` waits for an auto-stop's remux rather than reporting no recording, so it can be called right after `duration` elapses.
 
 **Audio recording is silent**
 `REMOTE_SUBMIX` only captures what apps are actually playing — a recording made while nothing plays is digital silence, which is expected. Also check the device is not muted, and remember the default `output` source moves the audio to the host, so the device goes quiet while capturing. Use `audioSource: "playback"` with `audioDup: true` (Android 13+) to keep it audible.
