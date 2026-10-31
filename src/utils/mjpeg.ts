@@ -1,7 +1,27 @@
 import http from "http"
+import os from "os"
 import { spawn, execFile } from "child_process"
 import { getLatestFrame, getSession } from "./scrcpy.js"
 import { findFfplay } from "./ffmpeg.js"
+
+// The MJPEG server runs wherever this MCP server runs — typically a container
+// whose loopback is unreachable from the caller. Bind all interfaces by default
+// and advertise a host the caller can actually resolve.
+function mjpegBindHost(): string {
+  return process.env.MJPEG_BIND_HOST || "0.0.0.0"
+}
+
+function mjpegPublicHost(): string {
+  return process.env.MJPEG_PUBLIC_HOST || os.hostname()
+}
+
+/** True when a GUI window can actually be mapped on this host. */
+export function hasHostDisplay(): boolean {
+  if (process.platform === "darwin" || process.platform === "win32") {
+    return true
+  }
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY)
+}
 
 // On some X11 servers (notably virtual/VM displays), SDL2 picks a GLX-capable
 // visual for every window it creates regardless of renderer, and that visual
@@ -60,7 +80,7 @@ export async function startMjpegServer(serial: string, port: number): Promise<st
   // Wait for listen to succeed; reject immediately on bind error
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
-    server.listen(port, "127.0.0.1", () => {
+    server.listen(port, mjpegBindHost(), () => {
       server.removeListener("error", reject)
       resolve()
     })
@@ -104,7 +124,7 @@ export async function startMjpegServer(serial: string, port: number): Promise<st
   })
 
   servers.set(serial, { server, clients, intervalId, port })
-  return `http://127.0.0.1:${port}`
+  return `http://${mjpegPublicHost()}:${port}`
 }
 
 // Open a native viewer window by pointing ffplay at the MJPEG HTTP stream we
@@ -116,21 +136,45 @@ export async function startMjpegServer(serial: string, port: number): Promise<st
 // consumers (screenshots, MJPEG clients, this window). MJPEG also sidesteps the
 // timestamp-less raw-H.264 problems that made ffplay stall before: each part is
 // a complete JPEG, displayed the moment it arrives.
-export async function startStreamViewer(serial: string, url: string): Promise<boolean> {
+export interface ViewerResult {
+  started: boolean
+  reason: string
+}
+
+export async function startStreamViewer(serial: string, url: string): Promise<ViewerResult> {
   const session = getSession(serial)
-  if (!session) return false
+  if (!session) {
+    return { started: false, reason: "no scrcpy session for this device" }
+  }
 
   if (session.viewerProcess && !session.viewerProcess.killed) {
     session.viewerProcess.kill()
   }
   session.viewerProcess = null
 
+  // A container has no X11/Wayland socket, so ffplay can never map a window
+  // there. Say so instead of spawning a process that dies and reporting
+  // "window opened".
+  if (!hasHostDisplay()) {
+    return {
+      started: false,
+      reason: "headless host (no DISPLAY/WAYLAND_DISPLAY) — open the stream URL in a browser",
+    }
+  }
+
   // ffplay uses SDL, which can pick a broken default visual on virtual/VM X11
   // displays; reuse the resolved visual id if we have one.
   const visualId = await resolveX11VisualId()
 
-  return new Promise<boolean>((resolve) => {
+  return new Promise<ViewerResult>((resolve) => {
     let settled = false
+    let stderrText = ""
+
+    const settle = (result: ViewerResult) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
 
     const viewer = spawn(findFfplay(), [
       "-window_title", "scrcpy-mcp",
@@ -141,34 +185,47 @@ export async function startStreamViewer(serial: string, url: string): Promise<bo
       "-framedrop",          // drop late frames to stay current on a live stream
       url,
     ], {
-      stdio: ["ignore", "ignore", "ignore"],
+      stdio: ["ignore", "ignore", "pipe"],
       env: {
         ...process.env,
         ...(visualId ? { SDL_VIDEO_X11_VISUALID: visualId } : {}),
       },
     })
 
-    viewer.once("spawn", () => {
-      session.viewerProcess = viewer
-      settled = true
-      resolve(true)
+    viewer.stderr?.on("data", (data: Buffer) => {
+      stderrText += data.toString()
+      if (stderrText.length > 2000) {
+        stderrText = stderrText.slice(-2000)
+      }
     })
 
-    viewer.on("error", (err) => {
+    viewer.once("error", (err: Error) => {
       console.error(`[viewer] ffplay error for ${serial}:`, err.message)
       if (session.viewerProcess === viewer) {
         session.viewerProcess = null
       }
-      if (!settled) {
-        settled = true
-        resolve(false)
-      }
+      settle({ started: false, reason: `ffplay failed to start: ${err.message}` })
     })
 
-    viewer.on("exit", () => {
-      if (session.viewerProcess === viewer) {
-        session.viewerProcess = null
-      }
+    viewer.once("spawn", () => {
+      session.viewerProcess = viewer
+      // "spawn" fires when the process is created, not when a window is mapped.
+      // SDL exits immediately on a host with no usable video device, so give it
+      // a moment before claiming the window opened.
+      const confirm = setTimeout(() => {
+        settle({ started: true, reason: "ffplay window opened" })
+      }, 750)
+
+      viewer.once("exit", (code: number | null) => {
+        clearTimeout(confirm)
+        if (session.viewerProcess === viewer) {
+          session.viewerProcess = null
+        }
+        settle({
+          started: false,
+          reason: `ffplay exited immediately (code ${code}): ${stderrText.trim() || "no stderr output"}`,
+        })
+      })
     })
   })
 }

@@ -253,18 +253,21 @@ Use only `scrcpy_*` tools when controlling an Android device. Do not reach for b
 
 ## Screen recording
 
-- `scrcpy_screen_record_start` with `duration` (seconds) auto-stops after that duration. The video is written to the specified `remotePath` on the device.
-- After auto-stop, `scrcpy_screen_record_stop` reports "No recording in progress" — this is expected. The file is already saved.
-- Use `scrcpy_file_pull` with `pullToHost: true` to retrieve the recording if you still need it.
-- 10 seconds of recording at 1440×2560 produces ~2.6 MB of MP4.
-- Without a `duration` parameter, recording continues indefinitely until `screen_record_stop` is called.
+- `scrcpy_screen_record_start` records the scrcpy session's raw H.264 stream **on the host**. It does not use `adb shell screenrecord`, so it works on Android 16/ColorOS builds where the `screen_record` SELinux domain cannot create files (EACCES) and where stdout recording hangs.
+- Pass `localPath` (host path ending in `.mp4`). Defaults to `/data/recording-<serial>.mp4` when `/data` exists, else `./recording-<serial>.mp4`. While recording the raw file is `<localPath>.h264`; stopping remuxes it with ffmpeg (`-c copy`) and deletes the raw file.
+- Recording starts at a decodable boundary: the tool sends RESET_VIDEO so the encoder re-sends SPS/PPS and an IDR frame, even when the session has been running for a while.
+- `duration` auto-stops after N seconds; the next `screen_record_stop` returns the finalized file (its message notes it was already auto-stopped).
+- If remux fails, the raw `.h264` is returned with `format: "h264"` — still playable with ffplay.
+- Recording needs an active scrcpy session; the tool starts one if needed. Stopping the session also finalizes the file.
+- 10 seconds at 1440×2560 produces ~2–3 MB of MP4.
 
 ```typescript
 // Start a 10-second recording
-scrcpy_screen_record_start({ duration: 10, remotePath: "/sdcard/demo.mp4" })
+scrcpy_screen_record_start({ duration: 10, localPath: "/data/demo.mp4" })
 
-// Pull it after it auto-stops
-scrcpy_file_pull({ remotePath: "/sdcard/demo.mp4", localPath: "/tmp/demo.mp4" })
+// After auto-stop, collect the finalized file
+scrcpy_screen_record_stop()
+// → { success: true, localPath: "/data/demo.mp4", bytes, durationSeconds, format: "mp4" }
 ```
 
 ## File push/pull
@@ -315,13 +318,14 @@ scrcpy_shell_exec({ command: "pm list packages -3" })
 
 ## Video streaming (screen mirroring)
 
-- `scrcpy_start_video_stream` starts an HTTP MJPEG stream at `http://127.0.0.1:7183` and opens an ffplay viewer window on the host.
+- `scrcpy_start_video_stream` starts an HTTP MJPEG stream and opens an ffplay viewer window **when the host has a display** (`DISPLAY`/`WAYLAND_DISPLAY` on Linux; always on macOS/Windows). In a headless container the `viewer` field says so instead of claiming a window opened.
+- The server binds `MJPEG_BIND_HOST` (default `0.0.0.0`) and advertises `MJPEG_PUBLIC_HOST` (default: machine hostname), so a containerised server returns a URL that is reachable from outside its loopback. Publish the port to reach it from another machine.
 - The stream shows the device screen in real-time — useful for visual feedback during multi-step interactions.
 - Video streaming automatically starts a scrcpy session if one is not active. Closing the ffplay window does NOT stop the stream; use `scrcpy_stop_video_stream` to clean up.
 - The max resolution is controlled by the `maxSize` parameter (default 1024). Use `maxFps` to cap frame rate (default 30).
 
 ```typescript
-scrcpy_start_video_stream()  // opens ffplay window at http://127.0.0.1:7183
+scrcpy_start_video_stream()  // MJPEG URL + viewer when a display exists
 
 // Optional: custom port and resolution
 scrcpy_start_video_stream({ port: 8080, maxSize: 720, maxFps: 15 })

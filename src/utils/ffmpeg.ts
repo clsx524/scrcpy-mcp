@@ -42,6 +42,19 @@ export function findFfplay(): string {
   return process.env.FFPLAY_PATH || "ffplay"
 }
 
+// ffprobe ships beside ffmpeg in distro packages; ffmpeg-static does not bundle
+// it, so fall back to PATH (or FFPROBE_PATH) when the sibling is missing.
+export function findFfprobe(): string {
+  const ffmpeg = findFfmpeg()
+  if (ffmpeg.includes("/") || ffmpeg.includes("\\")) {
+    const sibling = `${ffmpeg.slice(0, ffmpeg.lastIndexOf("/") + 1)}ffprobe`
+    if (fs.existsSync(sibling)) {
+      return sibling
+    }
+  }
+  return process.env.FFPROBE_PATH || "ffprobe"
+}
+
 // findFfmpeg/findFfplay fall back to the bare command name, which is spawned
 // through PATH. statSync on a bare name resolves against the process cwd, so
 // asking PATH is the only way to tell "installed system-wide" apart from
@@ -88,4 +101,25 @@ export function probeBinary(name: string): string | null {
     return resolveBinary(findFfplay())
   }
   return findOnPath(name)
+}
+
+/**
+ * ffplay can only play audio when the host actually has an output device.
+ * A container typically has neither /dev/snd nor a PulseAudio/PipeWire socket,
+ * so spawning ffplay there produces nothing while still reporting success.
+ */
+export function hasHostAudioSink(): { available: boolean; reason: string } {
+  if (process.platform === "darwin" || process.platform === "win32") {
+    return { available: true, reason: "" }
+  }
+  if (process.env.PULSE_SERVER || process.env.PIPEWIRE_REMOTE || process.env.JACK_DEFAULT_SERVER) {
+    return { available: true, reason: "" }
+  }
+  if (fs.existsSync("/dev/snd")) {
+    return { available: true, reason: "" }
+  }
+  return {
+    available: false,
+    reason: "no audio output device on this host (no /dev/snd or PulseAudio/PipeWire socket) — use audio_record_start to capture device audio to a file instead",
+  }
 }

@@ -203,7 +203,7 @@ turn audio on.
 
 | Tool | Description |
 |------|-------------|
-| `start_video_stream` | Start an HTTP MJPEG video stream and open a viewer window (ffplay). Auto-starts a scrcpy session if needed. |
+| `start_video_stream` | Start an HTTP MJPEG video stream and open a viewer window (ffplay) when the host has a display. Auto-starts a scrcpy session if needed. The server binds `MJPEG_BIND_HOST` (default `0.0.0.0`) and advertises `MJPEG_PUBLIC_HOST` (default: machine hostname), so a containerised server returns a reachable URL. |
 | `stop_video_stream` | Stop the video stream and close the viewer window. |
 
 ### Audio Streaming & Recording
@@ -212,7 +212,7 @@ turn audio on.
 
 | Tool | Description |
 |------|-------------|
-| `start_audio_stream` | Stream device audio to the host's speakers via ffplay. Restarts the scrcpy session if it was started without audio. |
+| `start_audio_stream` | Stream device audio to the host's speakers via ffplay. Refuses on hosts without an audio output device (e.g. containers) instead of reporting success. Restarts the scrcpy session if it was started without audio. |
 | `stop_audio_stream` | Stop streaming audio to the host. |
 | `audio_record_start` | Start recording device audio to `.wav` (default) or `.opus` on the host. Restarts the scrcpy session if needed. Stops automatically after `maxDuration` seconds (default 300). |
 | `audio_record_stop` | Stop the recording and finalise the host-side file. |
@@ -240,8 +240,8 @@ turn audio on.
 |------|-------------|
 | `screenshot` | Capture the screen and return it as an image. ~33ms with scrcpy, ~500ms via ADB. |
 | `screenshot_to_file` | Capture the screen and save the PNG on the host, returning the path and byte size instead of image data. Use when the client cannot render image blocks. |
-| `screen_record_start` | Start recording the screen to a file on the device |
-| `screen_record_stop` | Stop recording and optionally pull the file to the host |
+| `screen_record_start` | Start recording the screen to a host-side MP4. Taps the scrcpy session's H.264 stream (no device `screenrecord`), auto-starts a session if needed, and starts at a keyframe. Optional `duration` auto-stops. |
+| `screen_record_stop` | Stop recording, remux the raw H.264 to MP4 with ffmpeg, and return the host path (raw `.h264` kept if remux fails). |
 
 ### Input Control
 
@@ -320,6 +320,8 @@ start_session → take screenshots → tap → swipe → ...
 | `SCRCPY_SERVER_VERSION` | (auto) | Version of the scrcpy-server binary |
 | `FFMPEG_PATH` | `ffmpeg` | Path to the ffmpeg binary |
 | `FFPLAY_PATH` | `ffplay` | Path to the ffplay binary (video stream viewer and audio playback) |
+| `MJPEG_BIND_HOST` | `0.0.0.0` | Address the MJPEG stream server listens on |
+| `MJPEG_PUBLIC_HOST` | machine hostname | Host advertised in the stream URL (set to a name/address callers can resolve) |
 | `MCP_TRANSPORT` | `stdio` | Transport to serve: `stdio` or `http` (Streamable HTTP) |
 | `MCP_HTTP_PORT` | `8812` | Listen port when `MCP_TRANSPORT=http` |
 | `MCP_HTTP_HOST` | `0.0.0.0` | Listen address when `MCP_TRANSPORT=http` |
@@ -349,6 +351,15 @@ Start the session with `stayAwake: true` (plugged in only) or `screenOffTimeout:
 
 **`start_audio_stream` says ffplay was not found**
 Install ffmpeg (ffplay ships with it), or set `FFPLAY_PATH` to the binary. The same applies to `audio_record_start` and `FFMPEG_PATH`.
+
+**`start_audio_stream` says there is no audio output device**
+The server host has no sound card — typical for a container (no `/dev/snd`, no PulseAudio/PipeWire socket). ffplay cannot play there, so the tool refuses instead of pretending. Use `audio_record_start`/`audio_capture` to capture audio to a file or content block.
+
+**`start_video_stream` reports a headless host**
+No `DISPLAY`/`WAYLAND_DISPLAY` on the server host, so no ffplay window can open. The MJPEG server still runs: open the returned URL from a machine that can reach `MJPEG_PUBLIC_HOST`, and publish the port if the server runs in a container.
+
+**`screen_record_start` fails or `screen_record_stop` says no recording in progress**
+Recording taps the scrcpy session's H.264 stream on the host, so it needs an active scrcpy session (the tool starts one) and ffmpeg for the MP4 remux. If remux fails, the raw `.h264` path is returned and remains playable.
 
 **Audio recording is silent**
 `REMOTE_SUBMIX` only captures what apps are actually playing — a recording made while nothing plays is digital silence, which is expected. Also check the device is not muted, and remember the default `output` source moves the audio to the host, so the device goes quiet while capturing. Use `audioSource: "playback"` with `audioDup: true` (Android 13+) to keep it audible.

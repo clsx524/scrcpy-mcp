@@ -8,7 +8,7 @@ export function registerVideoTools(server: McpServer): void {
   server.registerTool(
     "start_video_stream",
     {
-      description: "Start an HTTP MJPEG video stream of the device screen and open a viewer window (ffplay). Starts a scrcpy session automatically if needed.",
+      description: "Start an HTTP MJPEG video stream of the device screen and open a viewer window (ffplay) when the host has a display. Starts a scrcpy session automatically if needed. Binds MJPEG_BIND_HOST (default 0.0.0.0) and advertises MJPEG_PUBLIC_HOST (default: machine hostname), so a server inside a container returns a URL the caller can reach.",
       inputSchema: {
         serial: z.string().optional().describe("Device serial number"),
         port: z.number().int().min(1024).max(65535).optional().default(7183).describe("HTTP port for the MJPEG stream (default 7183)"),
@@ -39,13 +39,13 @@ export function registerVideoTools(server: McpServer): void {
         }
         const url = await startMjpegServer(s, port)
 
-        const viewerLaunched = await startStreamViewer(s, url)
+        const viewer = await startStreamViewer(s, url)
 
         const structured = {
           status: "started",
           url,
           screenSize: session.screenSize,
-          viewer: viewerLaunched ? "ffplay window opened" : "ffplay not available — open the stream URL manually",
+          viewer: viewer.reason,
         }
         return {
           content: [{ type: "text", text: JSON.stringify(structured, null, 2) }],

@@ -22,6 +22,7 @@ import {
   CONTROL_MSG_TYPE_SET_CLIPBOARD,
   CONTROL_MSG_TYPE_ROTATE_DEVICE,
   CONTROL_MSG_TYPE_START_APP,
+  CONTROL_MSG_TYPE_RESET_VIDEO,
   DISPLAY_POWER_MODE_OFF,
   DISPLAY_POWER_MODE_ON,
   TEXT_MAX_LENGTH,
@@ -346,6 +347,99 @@ export function getLatestFrame(serial: string): Buffer | null {
   return session?.frameBuffer ?? null
 }
 
+interface VideoRecordingSink {
+  rawPath: string
+  stream: fs.WriteStream
+  startedAt: number
+  bytes: number
+}
+
+// Screen recordings are tee'd off the raw H.264 stream the session already
+// feeds to ffmpeg for screenshots/MJPEG. Recording client-side avoids a second
+// encoder on the device and the `screenrecord` binary entirely — on Android 16
+// ColorOS builds the screen_record SELinux domain cannot create files, so
+// `adb shell screenrecord <path>` fails with EACCES before writing a byte.
+const videoRecordings = new Map<string, VideoRecordingSink>()
+
+export interface VideoRecordingStart {
+  rawPath: string
+  startedAt: number
+}
+
+export interface VideoRecordingStop {
+  rawPath: string
+  bytes: number
+  durationMs: number
+}
+
+export function isVideoRecording(serial: string): boolean {
+  return videoRecordings.has(serial)
+}
+
+export function startVideoRecording(serial: string, rawPath: string): VideoRecordingStart {
+  if (videoRecordings.has(serial)) {
+    throw new Error(`a screen recording is already in progress for ${serial}`)
+  }
+
+  const session = sessions.get(serial)
+  if (!session || !session.videoSocket || !session.videoAvailable) {
+    throw new Error(
+      `no active scrcpy video stream for ${serial}; start a session before recording`
+    )
+  }
+
+  fs.mkdirSync(path.dirname(rawPath), { recursive: true })
+  const stream = fs.createWriteStream(rawPath)
+  stream.on("error", (err: Error) => {
+    console.error(`[scrcpy] recording stream error for ${serial}:`, err.message)
+  })
+
+  const startedAt = Date.now()
+  videoRecordings.set(serial, { rawPath, stream, startedAt, bytes: 0 })
+
+  // A session that has been running for a while is mid-GOP: the file would
+  // start without SPS/PPS or a keyframe and could not be decoded. RESET_VIDEO
+  // makes the server restart the encoder, which re-sends codec metadata and an
+  // IDR frame into the stream we are now tee-ing.
+  const control = session.controlSocket
+  if (control && !control.destroyed) {
+    try {
+      control.write(Buffer.from([CONTROL_MSG_TYPE_RESET_VIDEO]))
+    } catch (err) {
+      console.error(
+        `[scrcpy] failed to request video reset for ${serial}:`,
+        (err as Error).message
+      )
+    }
+  }
+
+  return { rawPath, startedAt }
+}
+
+export async function stopVideoRecording(
+  serial: string
+): Promise<VideoRecordingStop | null> {
+  const recording = videoRecordings.get(serial)
+  if (!recording) {
+    return null
+  }
+  videoRecordings.delete(serial)
+
+  if (!recording.stream.writableEnded) {
+    await new Promise<void>((resolve) => {
+      const done = () => resolve()
+      recording.stream.once("error", done)
+      recording.stream.end(done)
+    })
+  }
+
+  return {
+    rawPath: recording.rawPath,
+    bytes: recording.bytes,
+    durationMs: Date.now() - recording.startedAt,
+  }
+}
+
 function startVideoStream(
   session: ScrcpySession,
   videoSocket: net.Socket,
@@ -492,7 +586,20 @@ function startVideoStream(
 
   videoSocket.on("close", () => {
     session.videoSocket = null
+    const recording = videoRecordings.get(session.serial)
+    if (recording && !recording.stream.writableEnded) {
+      recording.stream.end()
+    }
   })
+
+  const teeRecording = (chunk: Buffer) => {
+    const recording = videoRecordings.get(session.serial)
+    if (!recording || recording.stream.writableEnded || recording.stream.destroyed) {
+      return
+    }
+    recording.bytes += chunk.length
+    recording.stream.write(chunk)
+  }
 
   if (ffmpeg.stdin) {
     ffmpeg.stdin.on("error", (err: NodeJS.ErrnoException) => {
@@ -514,6 +621,7 @@ function startVideoStream(
       if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
         try { ffmpeg.stdin.write(chunk) } catch { /* EPIPE handled above */ }
       }
+      teeRecording(chunk)
     })
     // receiveDeviceMeta left the socket paused so no stream bytes were lost
     // while the caller set things up; start the flow now that ffmpeg is fed.
@@ -521,6 +629,8 @@ function startVideoStream(
   } else {
     // No stdin to feed: still drain the socket so the server isn't blocked by
     // TCP backpressure, which would take the control socket down with it.
+    // Recording still works from this path: it does not need ffmpeg.
+    videoSocket.on("data", teeRecording)
     videoSocket.resume()
   }
 
@@ -1889,6 +1999,14 @@ export async function stopSession(serial: string): Promise<void> {
 
   if (!session) {
     return
+  }
+
+  const recording = videoRecordings.get(s)
+  if (recording) {
+    videoRecordings.delete(s)
+    if (!recording.stream.writableEnded) {
+      recording.stream.end()
+    }
   }
 
   if (session.videoSocket) {

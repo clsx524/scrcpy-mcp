@@ -31,7 +31,7 @@ import {
   type PlaybackSink,
   type ClipSink,
 } from "../utils/audio.js"
-import { probeBinary } from "../utils/ffmpeg.js"
+import { hasHostAudioSink, probeBinary } from "../utils/ffmpeg.js"
 
 const playbackSinks = new Map<string, PlaybackSink>()
 const clipSinks = new Map<string, ClipSink>()
@@ -520,6 +520,19 @@ export function registerAudioTools(server: McpServer): void {
               text: JSON.stringify({
                 status: "error",
                 message: "ffplay was not found on the host. Install ffmpeg (which includes ffplay) or set FFPLAY_PATH.",
+              }, null, 2),
+            }],
+            isError: true as const,
+          }
+        }
+        const sinkCheck = hasHostAudioSink()
+        if (!sinkCheck.available) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                status: "error",
+                message: sinkCheck.reason,
               }, null, 2),
             }],
             isError: true as const,
