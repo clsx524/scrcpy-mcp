@@ -25,6 +25,10 @@ interface FinishedRecording {
 
 const finishedRecordings = new Map<string, FinishedRecording>()
 const autoStopTimers = new Map<string, NodeJS.Timeout>()
+// An auto-stop removes the recording from the active map before ffprobe/ffmpeg
+// finish, so a stop call landing in that window would otherwise report "no
+// recording" for a capture that is being written right then.
+const finalizingRecordings = new Map<string, Promise<FinishedRecording>>()
 
 function recordingError(message: string) {
   return {
@@ -236,6 +240,9 @@ export function registerVisionTools(server: McpServer) {
         if (isVideoRecording(s)) {
           return recordingError(`A screen recording is already in progress for ${s}.`)
         }
+        if (finalizingRecordings.has(s)) {
+          return recordingError(`The previous recording for ${s} is still being finalized; call screen_record_stop to collect it.`)
+        }
 
         if (!hasActiveSession(s)) {
           await startSession(s)
@@ -259,9 +266,11 @@ export function registerVisionTools(server: McpServer) {
         if (duration !== undefined) {
           const timer = setTimeout(() => {
             autoStopTimers.delete(s)
-            void (async () => {
+            const finalize = (async () => {
               const stopped = await stopVideoRecording(s)
-              if (!stopped) return
+              if (!stopped) {
+                throw new Error(`recording ${s} disappeared before auto-stop`)
+              }
               const result = await finalizeRecording(
                 stopped.rawPath,
                 target,
@@ -270,9 +279,18 @@ export function registerVisionTools(server: McpServer) {
               )
               finishedRecordings.set(s, result)
               console.error(`[recording] ${s} auto-stopped: ${result.localPath}`)
-            })().catch((err: Error) => {
-              console.error(`[recording] ${s} auto-stop failed:`, err.message)
-            })
+              return result
+            })()
+            finalizingRecordings.set(s, finalize)
+            void finalize
+              .catch((err: Error) => {
+                console.error(`[recording] ${s} auto-stop failed:`, err.message)
+              })
+              .finally(() => {
+                if (finalizingRecordings.get(s) === finalize) {
+                  finalizingRecordings.delete(s)
+                }
+              })
           }, duration * 1000)
           autoStopTimers.set(s, timer)
         }
@@ -352,6 +370,17 @@ export function registerVisionTools(server: McpServer) {
         if (finished) {
           finishedRecordings.delete(s)
           const structured = { success: true, ...finished }
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(structured, null, 2) }],
+            structuredContent: structured,
+          }
+        }
+
+        const finalizing = finalizingRecordings.get(s)
+        if (finalizing) {
+          const result = await finalizing
+          finishedRecordings.delete(s)
+          const structured = { success: true, ...result }
           return {
             content: [{ type: "text" as const, text: JSON.stringify(structured, null, 2) }],
             structuredContent: structured,
