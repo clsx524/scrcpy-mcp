@@ -942,6 +942,28 @@ function getSocketName(scid: number): string {
   return `scrcpy_${scid.toString(16).padStart(8, "0")}`
 }
 
+/**
+ * Host on which `adb forward` listeners are reachable.
+ *
+ * Forwarded TCP ports are opened by the ADB *server* process, not by the adb
+ * client, and bind to that server's loopback. When ADB_SERVER_SOCKET points at
+ * a remote server (e.g. `tcp:host.docker.internal:5037` inside a container),
+ * connecting to 127.0.0.1 here would reach this process' own loopback instead
+ * of the server's. Exported for tests.
+ */
+export function getAdbForwardHost(env: NodeJS.ProcessEnv = process.env): string {
+  const socket = env.ADB_SERVER_SOCKET
+  if (!socket || !socket.startsWith("tcp:")) {
+    return "127.0.0.1"
+  }
+  const address = socket.slice("tcp:".length)
+  const separator = address.lastIndexOf(":")
+  if (separator <= 0) {
+    return "127.0.0.1"
+  }
+  return address.slice(0, separator).replace(/^\[|\]$/g, "")
+}
+
 export async function pushScrcpyServer(serial: string, serverPath: string): Promise<void> {
   await execAdb(["-s", serial, "push", serverPath, SCRCPY_SERVER_PATH_LOCAL], 30000)
 }
@@ -1185,7 +1207,7 @@ export function startScrcpyServer(
 // the TCP connection is established. If the read fails, the server is not ready.
 const connectAndVerify = async (port: number, timeout = 10000): Promise<net.Socket> =>
   new Promise((resolve, reject) => {
-    const socket = net.createConnection({ port, host: "127.0.0.1" })
+    const socket = net.createConnection({ port, host: getAdbForwardHost() })
     let settled = false
     const timer = setTimeout(() => {
       if (settled) return
@@ -1229,7 +1251,7 @@ const connectAndVerify = async (port: number, timeout = 10000): Promise<net.Sock
 
 const connectToServer = async (port: number, timeout = 10000): Promise<net.Socket> =>
   new Promise((resolve, reject) => {
-    const socket = net.createConnection({ port, host: "127.0.0.1" })
+    const socket = net.createConnection({ port, host: getAdbForwardHost() })
     const timer = setTimeout(() => {
       socket.destroy()
       reject(new Error(`Connection timeout to port ${port}`))

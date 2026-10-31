@@ -11,6 +11,7 @@ import {
   computeScrcpyVersionInfo,
   detectScrcpyVersionInfo,
   detectScrcpyVersion,
+  getAdbForwardHost,
   __resetScrcpyDetectionCachesForTests,
 } from "../src/utils/scrcpy.js"
 import {
@@ -816,5 +817,27 @@ describe("detectScrcpyVersionInfo", () => {
       }
       __resetScrcpyDetectionCachesForTests()
     }
+  })
+})
+
+describe("getAdbForwardHost", () => {
+  it("defaults to loopback when no ADB_SERVER_SOCKET is set", () => {
+    expect(getAdbForwardHost({})).toBe("127.0.0.1")
+  })
+
+  it("uses the remote adb server host for tcp sockets", () => {
+    expect(getAdbForwardHost({ ADB_SERVER_SOCKET: "tcp:host.docker.internal:5037" })).toBe(
+      "host.docker.internal"
+    )
+    expect(getAdbForwardHost({ ADB_SERVER_SOCKET: "tcp:10.0.0.5:5037" })).toBe("10.0.0.5")
+  })
+
+  it("strips IPv6 brackets", () => {
+    expect(getAdbForwardHost({ ADB_SERVER_SOCKET: "tcp:[::1]:5037" })).toBe("::1")
+  })
+
+  it("falls back to loopback for non-tcp sockets", () => {
+    expect(getAdbForwardHost({ ADB_SERVER_SOCKET: "localabstract:adb" })).toBe("127.0.0.1")
+    expect(getAdbForwardHost({ ADB_SERVER_SOCKET: "tcp:nohostport" })).toBe("127.0.0.1")
   })
 })
