@@ -8,7 +8,7 @@ Connect any MCP-compatible AI assistant (Claude Code, OpenCode, Cursor, VS Code 
 
 ## Features
 
-- **44 tools** covering screenshots, input, apps, UI automation, shell, files, clipboard, video streaming, and audio streaming/recording
+- **49 tools** covering screenshots, input, apps, UI automation, shell, files, clipboard, video streaming, and audio streaming/recording
 - **scrcpy-first**: uses scrcpy's binary control protocol for 10-50x faster input and near-instant screenshots (~33ms)
 - **ADB fallback**: interaction tools work without scrcpy — slower but always available (the audio tools `start_audio_stream`/`audio_record_start` and the video stream require scrcpy)
 - **Image-returning screenshots**: the AI actually sees the screen, not just a file path
@@ -51,6 +51,24 @@ npx scrcpy-mcp
 # Or install globally
 npm install -g scrcpy-mcp
 ```
+
+## Docker and Streamable HTTP
+
+The bundled `Dockerfile` installs `adb`, `scrcpy`, and `ffmpeg` and serves the same
+49 tools over Streamable HTTP, so a gateway such as Bifrost can connect with
+`http://<container>:8812/mcp`:
+
+```bash
+docker build -t scrcpy-mcp .
+docker run --rm -p 8812:8812 \
+  -e MCP_BEARER_TOKEN=<token> \
+  -e ADB_SERVER_SOCKET=tcp:host.docker.internal:5037 \
+  -e ANDROID_SERIAL=<serial> \
+  scrcpy-mcp
+```
+
+`/healthz` answers without auth; `/mcp` requires the bearer token when
+`MCP_BEARER_TOKEN` is set. Leave `MCP_TRANSPORT` unset for stdio.
 
 ## MCP Client Configuration
 
@@ -221,6 +239,7 @@ turn audio on.
 | Tool | Description |
 |------|-------------|
 | `screenshot` | Capture the screen and return it as an image. ~33ms with scrcpy, ~500ms via ADB. |
+| `screenshot_to_file` | Capture the screen and save the PNG on the host, returning the path and byte size instead of image data. Use when the client cannot render image blocks. |
 | `screen_record_start` | Start recording the screen to a file on the device |
 | `screen_record_stop` | Stop recording and optionally pull the file to the host |
 
@@ -255,14 +274,18 @@ All input tools use scrcpy (~5-10ms) when a session is active, otherwise fall ba
 |------|-------------|
 | `ui_dump` | Dump the full UI hierarchy as XML |
 | `ui_find_element` | Find elements by text, resource ID, class name, or content description. Returns tap coordinates. |
+| `wait_for_element` | Poll the hierarchy until a selector matches, then return the element. Replaces fixed sleeps after taps and navigation. |
+| `tap_element` | Resolve a selector to coordinates and tap it, optionally waiting first. Prefers clickable matches so the tap lands on the interactive ancestor. |
 
 ### Shell & Files
 
 | Tool | Description |
 |------|-------------|
 | `shell_exec` | Execute an arbitrary ADB shell command and return the output |
+| `logcat` | Read the most recent logcat lines without streaming, optionally filtered by one tag and minimum priority |
 | `file_push` | Push a file from the host machine to the device |
 | `file_pull` | Pull a file from the device to the host machine |
+| `file_read_text` | Read a text file from the device inline, capped by `maxBytes` |
 | `file_list` | List directory contents on the device |
 
 ### Clipboard
@@ -297,6 +320,10 @@ start_session → take screenshots → tap → swipe → ...
 | `SCRCPY_SERVER_VERSION` | (auto) | Version of the scrcpy-server binary |
 | `FFMPEG_PATH` | `ffmpeg` | Path to the ffmpeg binary |
 | `FFPLAY_PATH` | `ffplay` | Path to the ffplay binary (video stream viewer and audio playback) |
+| `MCP_TRANSPORT` | `stdio` | Transport to serve: `stdio` or `http` (Streamable HTTP) |
+| `MCP_HTTP_PORT` | `8812` | Listen port when `MCP_TRANSPORT=http` |
+| `MCP_HTTP_HOST` | `0.0.0.0` | Listen address when `MCP_TRANSPORT=http` |
+| `MCP_BEARER_TOKEN` | (none) | When set, `/mcp` requires `Authorization: Bearer <token>`; `/healthz` stays open |
 
 When only one device is connected, tools auto-detect it. With multiple devices, pass the `serial` parameter explicitly or set `ANDROID_SERIAL`.
 

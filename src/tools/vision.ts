@@ -1,4 +1,6 @@
 import { spawn, ChildProcess } from "child_process"
+import * as fs from "fs"
+import * as nodePath from "path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { execAdb, execAdbRaw, resolveSerial } from "../utils/adb.js"
@@ -228,6 +230,69 @@ export function registerVisionTools(server: McpServer) {
         content: [{ type: "text" as const, text: message }],
         structuredContent: { success: true, message },
       };
+    }
+  );
+
+  server.registerTool(
+    "screenshot_to_file",
+    {
+      description: "Capture the device screen and save the PNG on the host machine, returning the path and size instead of image data. Use when the MCP client cannot render image content blocks, or when the file must be inspected with host tools.",
+      inputSchema: {
+        localPath: z.string().describe("Absolute host path to write the PNG file to"),
+        serial: z.string().optional().describe("Device serial number"),
+      },
+      outputSchema: {
+        success: z.boolean().describe("Whether the file was written"),
+        localPath: z.string().describe("Host path of the written PNG"),
+        bytes: z.number().int().describe("Size of the written file in bytes"),
+        mimeType: z.string().describe("MIME type of the written file"),
+      },
+      annotations: {
+        title: "Screenshot to File",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ localPath, serial }) => {
+      try {
+        if (!nodePath.isAbsolute(localPath)) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({ error: true, message: "localPath must be an absolute path" }),
+            }],
+            isError: true as const,
+          };
+        }
+
+        const s = await resolveSerial(serial);
+        const pngBuffer = await execAdbRaw(["-s", s, "exec-out", "screencap", "-p"]);
+
+        fs.mkdirSync(nodePath.dirname(localPath), { recursive: true });
+        fs.writeFileSync(localPath, pngBuffer);
+
+        const structured = {
+          success: true,
+          localPath,
+          bytes: pngBuffer.length,
+          mimeType: "image/png",
+        };
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(structured) }],
+          structuredContent: structured,
+        };
+      } catch (error) {
+        const err = error as Error;
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({ error: true, message: err.message }),
+          }],
+          isError: true as const,
+        };
+      }
     }
   );
 }

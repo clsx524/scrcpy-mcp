@@ -217,4 +217,59 @@ export function registerFileTools(server: McpServer): void {
       }
     }
   )
+
+  server.registerTool(
+    "file_read_text",
+    {
+      description: "Read a text file from the device and return its contents inline, capped by maxBytes. Use instead of file_pull for small logs, configuration, or /proc entries.",
+      inputSchema: {
+        remotePath: z.string().describe("Path to the file on the device (e.g., /sdcard/myfile.txt)"),
+        maxBytes: z.number().int().positive().max(1048576).optional().default(65536).describe("Maximum bytes to return"),
+        serial: z.string().optional().describe("Device serial number"),
+      },
+      outputSchema: {
+        path: z.string().describe("The file that was read"),
+        bytes: z.number().int().describe("Total size of the file in bytes"),
+        truncated: z.boolean().describe("Whether the returned text was cut at maxBytes"),
+        text: z.string().describe("File contents"),
+      },
+      annotations: {
+        title: "Read Device Text File",
+        readOnlyHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ remotePath, maxBytes, serial }) => {
+      try {
+        const s = await resolveSerial(serial)
+        const safePath = remotePath.replace(/'/g, "'\\''")
+        const sizeOutput = await execAdbShell(s, `wc -c < '${safePath}'`)
+        const bytes = parseInt(sizeOutput.trim(), 10)
+        if (Number.isNaN(bytes)) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({ error: true, message: `Could not determine size of ${remotePath}` }),
+            }],
+            isError: true as const,
+          }
+        }
+        const text = await execAdbShell(s, `head -c ${maxBytes} '${safePath}'`)
+        const structured = { path: remotePath, bytes, truncated: bytes > maxBytes, text }
+        return {
+          content: [{ type: "text", text: JSON.stringify(structured) }],
+          structuredContent: structured,
+        }
+      } catch (error) {
+        const err = error as Error
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ error: true, message: err.message }),
+          }],
+          isError: true as const,
+        }
+      }
+    }
+  )
 }

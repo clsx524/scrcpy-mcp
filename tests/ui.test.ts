@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { parseUiNodes } from "../src/tools/ui.js"
+import { hasSelector, matchElements, parseUiNodes } from "../src/tools/ui.js"
 
 const SAMPLE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <hierarchy rotation="0">
@@ -117,5 +117,40 @@ describe("ui_find_element filtering logic", () => {
       .filter((el) => el.text.toLowerCase().includes("login"))
       .filter((el) => el.className === "android.widget.EditText")
     expect(noMatch).toHaveLength(0)
+  })
+})
+
+describe("matchElements", () => {
+  const nodes = parseUiNodes(SAMPLE_XML)
+
+  it("matches text partially and case-insensitively", () => {
+    expect(matchElements(nodes, { text: "LOGIN" })).toHaveLength(1)
+  })
+
+  it("matches resourceId exactly", () => {
+    expect(matchElements(nodes, { resourceId: "com.example.app:id/btn_login" })).toHaveLength(1)
+    expect(matchElements(nodes, { resourceId: "btn_login" })).toHaveLength(0)
+  })
+
+  it("matches className exactly", () => {
+    expect(matchElements(nodes, { className: "android.widget.Button" })).toHaveLength(1)
+  })
+
+  it("matches contentDesc partially and case-insensitively", () => {
+    expect(matchElements(nodes, { contentDesc: "logo" })).toHaveLength(1)
+  })
+
+  it("combines criteria as AND", () => {
+    expect(matchElements(nodes, { text: "login", className: "android.widget.Button" })).toHaveLength(1)
+    expect(matchElements(nodes, { text: "login", className: "android.widget.EditText" })).toHaveLength(0)
+  })
+
+  it("returns every element for an empty selector", () => {
+    expect(matchElements(nodes, {})).toHaveLength(nodes.length)
+  })
+
+  it("detects empty selectors", () => {
+    expect(hasSelector({})).toBe(false)
+    expect(hasSelector({ text: "x" })).toBe(true)
   })
 })
